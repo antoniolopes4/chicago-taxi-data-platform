@@ -216,7 +216,7 @@ BEGIN
 
           AND SourceColumnName IN
           (
-              '__BatchRunID',
+              '__TableRunID',
               '__ProcessDate',
               '__IngestedAtUtc'
           )
@@ -427,7 +427,7 @@ BEGIN
            Framework-owned technical metadata
            -------------------------------------------------------- */
 
-        + '    [__BatchRunID] BIGINT NOT NULL,'
+        + '    [__TableRunID] BIGINT NOT NULL,'
         + CHAR(13) + CHAR(10)
 
         + '    [__ProcessDate] DATE NOT NULL,'
