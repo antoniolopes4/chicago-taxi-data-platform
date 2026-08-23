@@ -14,7 +14,7 @@ BEGIN
 
 
     /* ============================================================
-       1. Resolve source table metadata
+       1. Resolve SourceTable metadata
        ============================================================ */
 
     DECLARE
@@ -35,9 +35,11 @@ BEGIN
 
     IF @SourceTableID IS NULL
     BEGIN
+
         THROW 50001,
               'Active SourceTable was not found for the supplied Code.',
               1;
+
     END;
 
 
@@ -48,25 +50,32 @@ BEGIN
 
 
     /* ============================================================
-       2. Validate schema
+       2. Validate target RAW schema
        ============================================================ */
 
     IF SCHEMA_ID(@RawSchemaName) IS NULL
     BEGIN
+
         THROW 50002,
               'Configured RAW schema does not exist.',
               1;
+
     END;
 
 
     /* ============================================================
-       3. Do not recreate an existing RAW table
+       3. Idempotency
+
+       An existing RAW table is not automatically recreated.
+
+       Schema evolution will be handled separately later.
        ============================================================ */
 
-    IF OBJECT_ID(
-            @RawSchemaName + '.' + @RawTableName,
-            'U'
-       ) IS NOT NULL
+    IF OBJECT_ID
+    (
+        @RawSchemaName + '.' + @RawTableName,
+        'U'
+    ) IS NOT NULL
     BEGIN
 
         PRINT
@@ -80,7 +89,7 @@ BEGIN
 
 
     /* ============================================================
-       4. Validate that column metadata exists
+       4. Validate DataDictionary existence
        ============================================================ */
 
     IF NOT EXISTS
@@ -100,7 +109,9 @@ BEGIN
 
 
     /* ============================================================
-       5. Validate variable-length datatypes
+       5. Validate character datatypes
+
+       VARCHAR / NVARCHAR / CHAR / NCHAR require a length.
        ============================================================ */
 
     IF EXISTS
@@ -109,26 +120,28 @@ BEGIN
         FROM cfg.DataDictionary
         WHERE SourceTableID = @SourceTableID
           AND IsActive = 1
-          AND SqlDataType IN
-              (
-                  'VARCHAR',
-                  'NVARCHAR',
-                  'CHAR',
-                  'NCHAR'
-              )
-          AND DataTypeLength IS NULL
+
+          AND RawSqlDataType IN
+          (
+              'VARCHAR',
+              'NVARCHAR',
+              'CHAR',
+              'NCHAR'
+          )
+
+          AND RawDataTypeLength IS NULL
     )
     BEGIN
 
         THROW 50004,
-              'Character datatype requires DataTypeLength.',
+              'RAW character datatype requires RawDataTypeLength.',
               1;
 
     END;
 
 
     /* ============================================================
-       CHAR(MAX) and NCHAR(MAX) are not valid SQL Server types.
+       6. CHAR(MAX) / NCHAR(MAX) are invalid
        ============================================================ */
 
     IF EXISTS
@@ -137,8 +150,14 @@ BEGIN
         FROM cfg.DataDictionary
         WHERE SourceTableID = @SourceTableID
           AND IsActive = 1
-          AND SqlDataType IN ('CHAR', 'NCHAR')
-          AND DataTypeLength = -1
+
+          AND RawSqlDataType IN
+          (
+              'CHAR',
+              'NCHAR'
+          )
+
+          AND RawDataTypeLength = -1
     )
     BEGIN
 
@@ -150,7 +169,7 @@ BEGIN
 
 
     /* ============================================================
-       6. Validate DECIMAL / NUMERIC
+       7. Validate DECIMAL / NUMERIC
        ============================================================ */
 
     IF EXISTS
@@ -159,24 +178,33 @@ BEGIN
         FROM cfg.DataDictionary
         WHERE SourceTableID = @SourceTableID
           AND IsActive = 1
-          AND SqlDataType IN ('DECIMAL', 'NUMERIC')
+
+          AND RawSqlDataType IN
+          (
+              'DECIMAL',
+              'NUMERIC'
+          )
+
           AND
           (
-              DataTypePrecision IS NULL
-              OR DataTypeScale IS NULL
+              RawDataTypePrecision IS NULL
+              OR RawDataTypeScale IS NULL
           )
     )
     BEGIN
 
         THROW 50006,
-              'DECIMAL and NUMERIC require Precision and Scale.',
+              'RAW DECIMAL and NUMERIC require Precision and Scale.',
               1;
 
     END;
 
 
     /* ============================================================
-       7. Protect reserved ETL column names
+       8. Protect ETL technical column names
+
+       Source systems cannot use these names because the framework
+       owns them.
        ============================================================ */
 
     IF EXISTS
@@ -185,12 +213,13 @@ BEGIN
         FROM cfg.DataDictionary
         WHERE SourceTableID = @SourceTableID
           AND IsActive = 1
+
           AND SourceColumnName IN
-              (
-                  '__BatchRunID',
-                  '__ProcessDate',
-                  '__IngestedAtUtc'
-              )
+          (
+              '__BatchRunID',
+              '__ProcessDate',
+              '__IngestedAtUtc'
+          )
     )
     BEGIN
 
@@ -202,7 +231,13 @@ BEGIN
 
 
     /* ============================================================
-       8. Generate column definitions
+       9. Generate RAW source-column definitions
+
+       IMPORTANT:
+
+       Physical RAW column name = SourceColumnName.
+
+       No business renaming occurs in Bronze.
        ============================================================ */
 
     DECLARE @ColumnDefinitions NVARCHAR(MAX);
@@ -224,81 +259,116 @@ BEGIN
                            Character types
                            ------------------------------------------ */
 
-                        WHEN SqlDataType IN
-                             (
-                                 'VARCHAR',
-                                 'NVARCHAR',
-                                 'CHAR',
-                                 'NCHAR'
-                             )
+                        WHEN RawSqlDataType IN
+                        (
+                            'VARCHAR',
+                            'NVARCHAR',
+                            'CHAR',
+                            'NCHAR'
+                        )
                         THEN
-                            SqlDataType
+                            RawSqlDataType
                             + '('
                             +
                             CASE
-                                WHEN DataTypeLength = -1
+                                WHEN RawDataTypeLength = -1
                                     THEN 'MAX'
+
                                 ELSE
-                                    CAST(DataTypeLength AS VARCHAR(10))
+                                    CAST(
+                                        RawDataTypeLength
+                                        AS VARCHAR(10)
+                                    )
                             END
                             + ')'
 
 
                         /* ------------------------------------------
-                           Decimal / Numeric
+                           Binary types
                            ------------------------------------------ */
 
-                        WHEN SqlDataType IN
-                             (
-                                 'DECIMAL',
-                                 'NUMERIC'
-                             )
+                        WHEN RawSqlDataType IN
+                        (
+                            'BINARY',
+                            'VARBINARY'
+                        )
                         THEN
-                            SqlDataType
+                            RawSqlDataType
+                            + '('
+                            +
+                            CASE
+                                WHEN RawDataTypeLength = -1
+                                    THEN 'MAX'
+
+                                ELSE
+                                    CAST(
+                                        RawDataTypeLength
+                                        AS VARCHAR(10)
+                                    )
+                            END
+                            + ')'
+
+
+                        /* ------------------------------------------
+                           DECIMAL / NUMERIC
+                           ------------------------------------------ */
+
+                        WHEN RawSqlDataType IN
+                        (
+                            'DECIMAL',
+                            'NUMERIC'
+                        )
+                        THEN
+                            RawSqlDataType
                             + '('
                             + CAST(
-                                DataTypePrecision
+                                RawDataTypePrecision
                                 AS VARCHAR(10)
                               )
                             + ','
                             + CAST(
-                                DataTypeScale
+                                RawDataTypeScale
                                 AS VARCHAR(10)
                               )
                             + ')'
 
 
                         /* ------------------------------------------
-                           DATETIME2 / TIME with optional precision
+                           DATETIME2 / TIME
+
+                           RawDataTypeScale represents fractional
+                           seconds precision when supplied.
                            ------------------------------------------ */
 
-                        WHEN SqlDataType IN
-                             (
-                                 'DATETIME2',
-                                 'TIME'
-                             )
-                             AND DataTypeScale IS NOT NULL
+                        WHEN RawSqlDataType IN
+                        (
+                            'DATETIME2',
+                            'TIME'
+                        )
+                        AND RawDataTypeScale IS NOT NULL
                         THEN
-                            SqlDataType
+                            RawSqlDataType
                             + '('
                             + CAST(
-                                DataTypeScale
+                                RawDataTypeScale
                                 AS VARCHAR(10)
                               )
                             + ')'
 
 
                         /* ------------------------------------------
-                           Types without additional parameters
+                           Types without parameters
                            ------------------------------------------ */
 
                         ELSE
-                            SqlDataType
+                            RawSqlDataType
 
                     END
+
                     +
+
                     CASE
-                        WHEN IsNullable = 1
+                        WHEN RawIsNullable = 1
                             THEN ' NULL'
                         ELSE
                             ' NOT NULL'
@@ -307,9 +377,11 @@ BEGIN
                     AS NVARCHAR(MAX)
                 ),
 
-                ',' + CHAR(13) + CHAR(10)
-
+                ','
+                + CHAR(13)
+                + CHAR(10)
             )
+
             WITHIN GROUP
             (
                 ORDER BY OrdinalPosition
@@ -321,25 +393,39 @@ BEGIN
       AND IsActive = 1;
 
 
+    IF @ColumnDefinitions IS NULL
+    BEGIN
+
+        THROW 50008,
+              'Unable to generate RAW column definitions.',
+              1;
+
+    END;
+
+
     /* ============================================================
-       9. Generate CREATE TABLE
+       10. Generate final CREATE TABLE statement
        ============================================================ */
 
     DECLARE @Sql NVARCHAR(MAX);
 
 
     SET @Sql =
-        'CREATE TABLE '
+          'CREATE TABLE '
         + @FullTableName
         + CHAR(13) + CHAR(10)
+
         + '('
         + CHAR(13) + CHAR(10)
 
         + @ColumnDefinitions
-
         + ','
         + CHAR(13) + CHAR(10)
         + CHAR(13) + CHAR(10)
+
+        /* --------------------------------------------------------
+           Framework-owned technical metadata
+           -------------------------------------------------------- */
 
         + '    [__BatchRunID] BIGINT NOT NULL,'
         + CHAR(13) + CHAR(10)
@@ -348,21 +434,27 @@ BEGIN
         + CHAR(13) + CHAR(10)
 
         + '    [__IngestedAtUtc] DATETIME2(0) NOT NULL'
+        + ' CONSTRAINT '
+        + QUOTENAME(
+              'DF_'
+              + @RawTableName
+              + '_IngestedAtUtc'
+          )
         + ' DEFAULT (SYSUTCDATETIME())'
-
         + CHAR(13) + CHAR(10)
+
         + ');';
 
 
     /* ============================================================
-       10. Show generated SQL
+       11. Show generated DDL
        ============================================================ */
 
     PRINT @Sql;
 
 
     /* ============================================================
-       11. Execute generated SQL
+       12. Execute generated DDL
        ============================================================ */
 
     EXEC sys.sp_executesql @Sql;
