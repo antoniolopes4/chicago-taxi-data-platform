@@ -1,10 +1,15 @@
 USE ChicagoTaxiDW;
 GO
 
-/* ============================================================
-   cfg.DataSource
 
-   Defines the source systems available to the ETL framework.
+/* ============================================================
+    cfg.DataSource
+
+    Logical definition of a source system.
+
+    SourceType (e.g. DATABASE, API, STREAM, etc)
+
+    ProviderType (e.g. SQLSERVER, KAFKA, etc)
    ============================================================ */
 
 IF OBJECT_ID('cfg.DataSource', 'U') IS NULL
@@ -24,6 +29,8 @@ BEGIN
 
         SourceType VARCHAR(30) NOT NULL,
 
+        ProviderType VARCHAR(50) NOT NULL,
+
         IsActive BIT NOT NULL
             CONSTRAINT DF_DataSource_IsActive
             DEFAULT (1),
@@ -33,6 +40,7 @@ BEGIN
             DEFAULT (SYSUTCDATETIME()),
 
         UpdatedAtUtc DATETIME2(0) NULL,
+
 
         CONSTRAINT PK_DataSource
             PRIMARY KEY (DataSourceID),
@@ -47,18 +55,15 @@ BEGIN
             CHECK (Code > 0),
 
         CONSTRAINT CK_DataSource_SourceType
-            CHECK (
-                SourceType IN (
+            CHECK
+            (
+                SourceType IN
+                (
+                    'DATABASE',
                     'API',
-                    'SQLSERVER',
-                    'MYSQL',
-                    'DB2',
-                    'POSTGRES',
-                    'CSV',
-                    'EXCEL',
-                    'JSON',
-                    'PARQUET',
-                    'SFTP',
+                    'FILE',
+                    'OBJECT_STORAGE',
+                    'STREAM',
                     'OTHER'
                 )
             )
@@ -69,16 +74,181 @@ GO
 
 
 /* ============================================================
-   cfg.SourceTable
+    cfg.DataSourceConnection
 
-   Defines the objects that can be ingested from each source.
+    Physical/environment-specific information required to
+    connect to a datasource.
 
-   LoadType:
-       FULL = complete reload
-       INCR = incremental processing
 
-   QueryFilter:
-       Optional static source filter.
+    IMPORTANT:
+    Passwords, API keys and tokens must NOT be stored here.
+    SecretReference contains only a reference to a secret.
+   ============================================================ */
+
+IF OBJECT_ID('cfg.DataSourceConnection', 'U') IS NULL
+BEGIN
+
+    CREATE TABLE cfg.DataSourceConnection
+    (
+        DataSourceConnectionID INT IDENTITY(1,1) NOT NULL,
+
+        DataSourceID INT NOT NULL,
+
+        Code INT NOT NULL,
+
+        TechnicalName VARCHAR(100) NOT NULL,
+
+        EnvironmentCode VARCHAR(10) NOT NULL,
+
+
+        /* ====================================================
+           Database / server / SFTP / file server
+           ==================================================== */
+
+        ServerName NVARCHAR(255) NULL,
+
+        InstanceName NVARCHAR(255) NULL,
+
+        DatabaseName SYSNAME NULL,
+
+        Port INT NULL,
+
+
+        /* ====================================================
+           API
+           ==================================================== */
+
+        BaseUrl NVARCHAR(1000) NULL,
+
+
+        /* ====================================================
+           Shared / local / remote files
+
+           Example:
+           \\FILESRV01\finance\incoming
+
+           ServerName = FILESRV01
+           ShareName  = finance
+           BasePath   = incoming
+           ==================================================== */
+
+        ShareName NVARCHAR(255) NULL,
+
+        BasePath NVARCHAR(1000) NULL,
+
+
+        /* ====================================================
+           Authentication
+           ==================================================== */
+
+        AuthenticationType VARCHAR(30) NOT NULL,
+
+        DomainName NVARCHAR(255) NULL,
+
+        UserName NVARCHAR(255) NULL,
+
+        /*
+            Example:
+
+            ERP_PRD_ETL_PASSWORD
+            FINANCE_SHARE_PASSWORD
+
+            This field stores the reference/name of the secret,
+            NOT the password itself.
+        */
+        SecretReference NVARCHAR(255) NULL,
+
+
+        ConnectionTimeoutSeconds INT NOT NULL
+            CONSTRAINT DF_DataSourceConnection_Timeout
+            DEFAULT (30),
+
+        IsActive BIT NOT NULL
+            CONSTRAINT DF_DataSourceConnection_IsActive
+            DEFAULT (1),
+
+        CreatedAtUtc DATETIME2(0) NOT NULL
+            CONSTRAINT DF_DataSourceConnection_CreatedAtUtc
+            DEFAULT (SYSUTCDATETIME()),
+
+        UpdatedAtUtc DATETIME2(0) NULL,
+
+
+        CONSTRAINT PK_DataSourceConnection
+            PRIMARY KEY (DataSourceConnectionID),
+
+        CONSTRAINT FK_DataSourceConnection_DataSource
+            FOREIGN KEY (DataSourceID)
+            REFERENCES cfg.DataSource(DataSourceID),
+
+        CONSTRAINT UQ_DataSourceConnection_Code
+            UNIQUE
+            (
+                DataSourceID,
+                EnvironmentCode,
+                Code
+            ),
+
+        CONSTRAINT UQ_DataSourceConnection_TechnicalName
+            UNIQUE
+            (
+                DataSourceID,
+                EnvironmentCode,
+                TechnicalName
+            ),
+
+        CONSTRAINT CK_DataSourceConnection_Code
+            CHECK (Code > 0),
+
+        CONSTRAINT CK_DataSourceConnection_Environment
+            CHECK
+            (
+                EnvironmentCode IN
+                (
+                    'DEV',
+                    'QA',
+                    'PRD'
+                )
+            ),
+
+        CONSTRAINT CK_DataSourceConnection_Authentication
+            CHECK
+            (
+                AuthenticationType IN
+                (
+                    'NONE',
+                    'WINDOWS',
+                    'SQL',
+                    'BASIC',
+                    'API_KEY',
+                    'TOKEN',
+                    'SFTP_PASSWORD',
+                    'SFTP_KEY'
+                )
+            ),
+
+        CONSTRAINT CK_DataSourceConnection_Port
+            CHECK
+            (
+                Port IS NULL
+                OR Port BETWEEN 1 AND 65535
+            ),
+
+        CONSTRAINT CK_DataSourceConnection_Timeout
+            CHECK
+            (
+                ConnectionTimeoutSeconds > 0
+            )
+    );
+
+END;
+GO
+
+
+/* ============================================================
+    cfg.SourceTable
+
+    Defines each logical object to be ingested from a datasource.
    ============================================================ */
 
 IF OBJECT_ID('cfg.SourceTable', 'U') IS NULL
@@ -98,8 +268,24 @@ BEGIN
 
         Description NVARCHAR(1000) NULL,
 
+        /*
+            TABLE
+            VIEW
+            ENDPOINT
+            FILE
+            OTHER
+        */
+        SourceObjectType VARCHAR(20) NOT NULL,
+
+        SourceObjectName NVARCHAR(500) NOT NULL,
+
         LoadType VARCHAR(10) NOT NULL,
 
+        /*
+            Static filter only.
+
+            Do not store D-1 dates here.
+        */
         QueryFilter NVARCHAR(2000) NULL,
 
         RawSchemaName SYSNAME NOT NULL
@@ -122,6 +308,7 @@ BEGIN
 
         UpdatedAtUtc DATETIME2(0) NULL,
 
+
         CONSTRAINT PK_SourceTable
             PRIMARY KEY (SourceTableID),
 
@@ -133,16 +320,44 @@ BEGIN
             UNIQUE (Code),
 
         CONSTRAINT UQ_SourceTable_DataSource_TechnicalName
-            UNIQUE (DataSourceID, TechnicalName),
+            UNIQUE
+            (
+                DataSourceID,
+                TechnicalName
+            ),
 
         CONSTRAINT UQ_SourceTable_RawTarget
-            UNIQUE (RawSchemaName, RawTableName),
+            UNIQUE
+            (
+                RawSchemaName,
+                RawTableName
+            ),
 
         CONSTRAINT CK_SourceTable_Code
             CHECK (Code > 0),
 
         CONSTRAINT CK_SourceTable_LoadType
-            CHECK (LoadType IN ('FULL', 'INCR'))
+            CHECK
+            (
+                LoadType IN
+                (
+                    'FULL',
+                    'INCR'
+                )
+            ),
+
+        CONSTRAINT CK_SourceTable_ObjectType
+            CHECK
+            (
+                SourceObjectType IN
+                (
+                    'TABLE',
+                    'VIEW',
+                    'ENDPOINT',
+                    'FILE',
+                    'OTHER'
+                )
+            )
     );
 
 END;
@@ -150,11 +365,9 @@ GO
 
 
 /* ============================================================
-   cfg.DataDictionary
+    cfg.DataDictionary
 
-   Describes the structure of every source object.
-
-   Used by the metadata-driven framework.
+    Column-level metadata.
    ============================================================ */
 
 IF OBJECT_ID('cfg.DataDictionary', 'U') IS NULL
@@ -206,6 +419,7 @@ BEGIN
 
         UpdatedAtUtc DATETIME2(0) NULL,
 
+
         CONSTRAINT PK_DataDictionary
             PRIMARY KEY (DataDictionaryID),
 
@@ -214,16 +428,32 @@ BEGIN
             REFERENCES cfg.SourceTable(SourceTableID),
 
         CONSTRAINT UQ_DataDictionary_Table_Code
-            UNIQUE (SourceTableID, Code),
+            UNIQUE
+            (
+                SourceTableID,
+                Code
+            ),
 
         CONSTRAINT UQ_DataDictionary_Table_SourceColumn
-            UNIQUE (SourceTableID, SourceColumnName),
+            UNIQUE
+            (
+                SourceTableID,
+                SourceColumnName
+            ),
 
         CONSTRAINT UQ_DataDictionary_Table_TargetColumn
-            UNIQUE (SourceTableID, TargetColumnName),
+            UNIQUE
+            (
+                SourceTableID,
+                TargetColumnName
+            ),
 
         CONSTRAINT UQ_DataDictionary_Table_Ordinal
-            UNIQUE (SourceTableID, OrdinalPosition),
+            UNIQUE
+            (
+                SourceTableID,
+                OrdinalPosition
+            ),
 
         CONSTRAINT CK_DataDictionary_Code
             CHECK (Code > 0),
