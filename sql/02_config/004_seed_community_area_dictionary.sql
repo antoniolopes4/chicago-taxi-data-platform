@@ -12,7 +12,10 @@ BEGIN TRY
 
 
     /* ============================================================
-       Resolve COMMUNITY_AREAS using its stable Code.
+       Resolve COMMUNITY_AREAS
+
+       Code is the stable functional identifier.
+       SourceTableID is the local surrogate key.
        ============================================================ */
 
     DECLARE @SourceTableID INT;
@@ -28,33 +31,49 @@ BEGIN TRY
     IF @SourceTableID IS NULL
     BEGIN
         THROW 50001,
-              'Active source table COMMUNITY_AREAS (Code 1002) was not found.',
+              'Active SourceTable COMMUNITY_AREAS (Code 1002) was not found.',
               1;
     END;
 
 
     /* ============================================================
-       One row represents one source column.
+       Desired Data Dictionary state
+
+       SourceDataType:
+           Datatype declared by the source.
+
+       SourceIsNullable:
+           NULL = source does not provide/guarantee nullability
+                  information that we want to enforce here.
+
+       RawSqlDataType:
+           Tolerant physical SQL Server datatype used in Bronze.
+
+       RawIsNullable:
+           Always 1 for source columns in the tolerant RAW layer.
        ============================================================ */
 
     DECLARE @Dictionary TABLE
     (
-        Code                INT            NOT NULL,
-        SourceColumnName    NVARCHAR(150)  NOT NULL,
-        TargetColumnName    SYSNAME        NOT NULL,
-        Description         NVARCHAR(1000) NULL,
+        Code                  INT             NOT NULL,
+        SourceColumnName      NVARCHAR(150)   NOT NULL,
 
-        SqlDataType         VARCHAR(30)    NOT NULL,
-        DataTypeLength      INT            NULL,
-        DataTypePrecision   TINYINT        NULL,
-        DataTypeScale       TINYINT        NULL,
+        SourceDataType        NVARCHAR(100)   NULL,
+        SourceIsNullable      BIT             NULL,
 
-        IsNullable          BIT            NOT NULL,
-        OrdinalPosition     INT            NOT NULL,
+        Description           NVARCHAR(1000)  NULL,
 
-        IsBusinessKey       BIT            NOT NULL,
-        IsIncrementalColumn BIT            NOT NULL,
-        IsActive            BIT            NOT NULL
+        RawSqlDataType        VARCHAR(30)     NOT NULL,
+        RawDataTypeLength     INT             NULL,
+        RawDataTypePrecision  TINYINT         NULL,
+        RawDataTypeScale      TINYINT         NULL,
+        RawIsNullable         BIT             NOT NULL,
+
+        OrdinalPosition       INT             NOT NULL,
+
+        IsBusinessKey         BIT             NOT NULL,
+        IsIncrementalColumn   BIT             NOT NULL,
+        IsActive              BIT             NOT NULL
     );
 
 
@@ -62,136 +81,184 @@ BEGIN TRY
     (
         Code,
         SourceColumnName,
-        TargetColumnName,
+
+        SourceDataType,
+        SourceIsNullable,
+
         Description,
-        SqlDataType,
-        DataTypeLength,
-        DataTypePrecision,
-        DataTypeScale,
-        IsNullable,
+
+        RawSqlDataType,
+        RawDataTypeLength,
+        RawDataTypePrecision,
+        RawDataTypeScale,
+        RawIsNullable,
+
         OrdinalPosition,
+
         IsBusinessKey,
         IsIncrementalColumn,
         IsActive
     )
     VALUES
 
-    /* ------------------------------------------------------------
-       Geometry
-       ------------------------------------------------------------ */
+    /* ============================================================
+       1. the_geom
+       ============================================================ */
 
     (
         1,
         'the_geom',
-        'GeometryRaw',
-        'Raw multipolygon geometry received from the source.',
+
+        'multipolygon',
+        NULL,
+
+        'Geographic multipolygon geometry as exposed by the source.',
+
         'NVARCHAR',
         -1,
         NULL,
         NULL,
         1,
+
         1,
+
         0,
         0,
         1
     ),
 
-    /* ------------------------------------------------------------
-       Community Area Number
-       Official row identifier / business key
-       ------------------------------------------------------------ */
+
+    /* ============================================================
+       2. area_numbe
+
+       Business key for the Community Area.
+       ============================================================ */
 
     (
         2,
         'area_numbe',
-        'CommunityAreaNumber',
-        'Official numeric identifier of the Chicago community area.',
-        'SMALLINT',
+
+        'number',
+        NULL,
+
+        'Community area number as exposed by the source.',
+
+        'NVARCHAR',
+        50,
         NULL,
         NULL,
-        NULL,
-        0,
+        1,
+
         2,
+
         1,
         0,
         1
     ),
 
-    /* ------------------------------------------------------------
-       Community Area Name
-       ------------------------------------------------------------ */
+
+    /* ============================================================
+       3. community
+       ============================================================ */
 
     (
         3,
         'community',
-        'CommunityAreaName',
-        'Official name of the Chicago community area.',
+
+        'text',
+        NULL,
+
+        'Official community area name as exposed by the source.',
+
+        'NVARCHAR',
+        255,
+        NULL,
+        NULL,
+        1,
+
+        3,
+
+        0,
+        0,
+        1
+    ),
+
+
+    /* ============================================================
+       4. area_num_1
+       ============================================================ */
+
+    (
+        4,
+        'area_num_1',
+
+        'text',
+        NULL,
+
+        'Text representation of the community area number as exposed by the source.',
+
+        'NVARCHAR',
+        50,
+        NULL,
+        NULL,
+        1,
+
+        4,
+
+        0,
+        0,
+        1
+    ),
+
+
+    /* ============================================================
+       5. shape_area
+       ============================================================ */
+
+    (
+        5,
+        'shape_area',
+
+        'number',
+        NULL,
+
+        'Area measurement associated with the geographic shape.',
+
         'NVARCHAR',
         100,
         NULL,
         NULL,
         1,
-        3,
-        0,
-        0,
-        1
-    ),
 
-    /* ------------------------------------------------------------
-       Source textual representation of area number
-       ------------------------------------------------------------ */
-
-    (
-        4,
-        'area_num_1',
-        'CommunityAreaNumberText',
-        'Text representation of the community area number as provided by the source.',
-        'NVARCHAR',
-        10,
-        NULL,
-        NULL,
-        1,
-        4,
-        0,
-        0,
-        1
-    ),
-
-    /* ------------------------------------------------------------
-       Shape Area
-       ------------------------------------------------------------ */
-
-    (
         5,
-        'shape_area',
-        'ShapeArea',
-        'Area measurement associated with the source geographic shape.',
-        'DECIMAL',
-        NULL,
-        20,
-        6,
-        1,
-        5,
+
         0,
         0,
         1
     ),
 
-    /* ------------------------------------------------------------
-       Shape Length
-       ------------------------------------------------------------ */
+
+    /* ============================================================
+       6. shape_len
+       ============================================================ */
 
     (
         6,
         'shape_len',
-        'ShapeLength',
-        'Length measurement associated with the source geographic shape.',
-        'DECIMAL',
+
+        'number',
         NULL,
-        20,
-        6,
+
+        'Length measurement associated with the geographic shape.',
+
+        'NVARCHAR',
+        100,
+        NULL,
+        NULL,
         1,
+
         6,
+
         0,
         0,
         1
@@ -199,30 +266,52 @@ BEGIN TRY
 
 
     /* ============================================================
-       UPDATE existing metadata
-
-       This makes changes to the seed deployable without changing
-       the surrogate DataDictionaryID.
+       Update existing metadata
        ============================================================ */
 
     UPDATE target
     SET
-        target.SourceColumnName = source.SourceColumnName,
-        target.TargetColumnName = source.TargetColumnName,
-        target.Description = source.Description,
+        target.SourceColumnName =
+            source.SourceColumnName,
 
-        target.SqlDataType = source.SqlDataType,
-        target.DataTypeLength = source.DataTypeLength,
-        target.DataTypePrecision = source.DataTypePrecision,
-        target.DataTypeScale = source.DataTypeScale,
+        target.SourceDataType =
+            source.SourceDataType,
 
-        target.IsNullable = source.IsNullable,
-        target.OrdinalPosition = source.OrdinalPosition,
-        target.IsBusinessKey = source.IsBusinessKey,
-        target.IsIncrementalColumn = source.IsIncrementalColumn,
-        target.IsActive = source.IsActive,
+        target.SourceIsNullable =
+            source.SourceIsNullable,
 
-        target.UpdatedAtUtc = SYSUTCDATETIME()
+        target.Description =
+            source.Description,
+
+        target.RawSqlDataType =
+            source.RawSqlDataType,
+
+        target.RawDataTypeLength =
+            source.RawDataTypeLength,
+
+        target.RawDataTypePrecision =
+            source.RawDataTypePrecision,
+
+        target.RawDataTypeScale =
+            source.RawDataTypeScale,
+
+        target.RawIsNullable =
+            source.RawIsNullable,
+
+        target.OrdinalPosition =
+            source.OrdinalPosition,
+
+        target.IsBusinessKey =
+            source.IsBusinessKey,
+
+        target.IsIncrementalColumn =
+            source.IsIncrementalColumn,
+
+        target.IsActive =
+            source.IsActive,
+
+        target.UpdatedAtUtc =
+            SYSUTCDATETIME()
 
     FROM cfg.DataDictionary target
 
@@ -233,7 +322,7 @@ BEGIN TRY
 
 
     /* ============================================================
-       INSERT metadata that does not exist yet
+       Insert metadata that does not exist
        ============================================================ */
 
     INSERT INTO cfg.DataDictionary
@@ -242,16 +331,20 @@ BEGIN TRY
 
         Code,
         SourceColumnName,
-        TargetColumnName,
+
+        SourceDataType,
+        SourceIsNullable,
+
         Description,
 
-        SqlDataType,
-        DataTypeLength,
-        DataTypePrecision,
-        DataTypeScale,
+        RawSqlDataType,
+        RawDataTypeLength,
+        RawDataTypePrecision,
+        RawDataTypeScale,
+        RawIsNullable,
 
-        IsNullable,
         OrdinalPosition,
+
         IsBusinessKey,
         IsIncrementalColumn,
         IsActive
@@ -262,16 +355,20 @@ BEGIN TRY
 
         source.Code,
         source.SourceColumnName,
-        source.TargetColumnName,
+
+        source.SourceDataType,
+        source.SourceIsNullable,
+
         source.Description,
 
-        source.SqlDataType,
-        source.DataTypeLength,
-        source.DataTypePrecision,
-        source.DataTypeScale,
+        source.RawSqlDataType,
+        source.RawDataTypeLength,
+        source.RawDataTypePrecision,
+        source.RawDataTypeScale,
+        source.RawIsNullable,
 
-        source.IsNullable,
         source.OrdinalPosition,
+
         source.IsBusinessKey,
         source.IsIncrementalColumn,
         source.IsActive
