@@ -365,9 +365,19 @@ GO
 
 
 /* ============================================================
-    cfg.DataDictionary
+   cfg.DataDictionary
 
-    Column-level metadata.
+   Describes source columns and how they are physically stored
+   in the RAW / Bronze layer.
+
+   Design principles:
+
+   - Source metadata describes what the source declares.
+   - RAW metadata describes how the value is stored in Bronze.
+   - RAW column names remain identical to SourceColumnName.
+   - RAW is intentionally tolerant.
+   - Strong typing, renaming and data-quality enforcement belong
+     to ODS / Silver.
    ============================================================ */
 
 IF OBJECT_ID('cfg.DataDictionary', 'U') IS NULL
@@ -379,25 +389,86 @@ BEGIN
 
         SourceTableID INT NOT NULL,
 
+        /*
+            Stable column code within the source table.
+        */
         Code INT NOT NULL,
 
+
+        /* ====================================================
+           Source metadata
+           ==================================================== */
+
+        /*
+            Exact column name as exposed by the source.
+
+            This will also be the physical column name in RAW.
+        */
         SourceColumnName NVARCHAR(150) NOT NULL,
 
-        TargetColumnName SYSNAME NOT NULL,
+        /*
+            Datatype declared by the source.
+
+            Examples:
+                text
+                number
+                timestamp
+                multipolygon
+                varchar(50)
+
+            NULL is allowed because some sources, such as CSV,
+            may not expose an explicit datatype.
+        */
+        SourceDataType NVARCHAR(100) NULL,
+
+        /*
+            Nullability declared by the source.
+
+            NULL means:
+                unknown / not supplied by source metadata.
+        */
+        SourceIsNullable BIT NULL,
 
         Description NVARCHAR(1000) NULL,
 
-        SqlDataType VARCHAR(30) NOT NULL,
 
-        DataTypeLength INT NULL,
+        /* ====================================================
+           RAW / Bronze physical storage
+           ==================================================== */
 
-        DataTypePrecision TINYINT NULL,
+        /*
+            SQL Server datatype used to store the raw value.
 
-        DataTypeScale TINYINT NULL,
+            This may intentionally be more tolerant than the
+            datatype declared by the source.
 
-        IsNullable BIT NOT NULL
-            CONSTRAINT DF_DataDictionary_IsNullable
+            Example:
+
+                SourceDataType = number
+                RawSqlDataType = NVARCHAR
+        */
+        RawSqlDataType VARCHAR(30) NOT NULL,
+
+        RawDataTypeLength INT NULL,
+
+        RawDataTypePrecision TINYINT NULL,
+
+        RawDataTypeScale TINYINT NULL,
+
+        /*
+            RAW is designed to accept malformed or unexpected
+            source values without blocking ingestion.
+
+            Therefore the normal value is 1.
+        */
+        RawIsNullable BIT NOT NULL
+            CONSTRAINT DF_DataDictionary_RawIsNullable
             DEFAULT (1),
+
+
+        /* ====================================================
+           Column semantics
+           ==================================================== */
 
         OrdinalPosition INT NOT NULL,
 
@@ -413,6 +484,11 @@ BEGIN
             CONSTRAINT DF_DataDictionary_IsActive
             DEFAULT (1),
 
+
+        /* ====================================================
+           Audit metadata
+           ==================================================== */
+
         CreatedAtUtc DATETIME2(0) NOT NULL
             CONSTRAINT DF_DataDictionary_CreatedAtUtc
             DEFAULT (SYSUTCDATETIME()),
@@ -420,12 +496,21 @@ BEGIN
         UpdatedAtUtc DATETIME2(0) NULL,
 
 
+        /* ====================================================
+           Keys
+           ==================================================== */
+
         CONSTRAINT PK_DataDictionary
             PRIMARY KEY (DataDictionaryID),
 
         CONSTRAINT FK_DataDictionary_SourceTable
             FOREIGN KEY (SourceTableID)
             REFERENCES cfg.SourceTable(SourceTableID),
+
+
+        /* ====================================================
+           Uniqueness
+           ==================================================== */
 
         CONSTRAINT UQ_DataDictionary_Table_Code
             UNIQUE
@@ -441,13 +526,6 @@ BEGIN
                 SourceColumnName
             ),
 
-        CONSTRAINT UQ_DataDictionary_Table_TargetColumn
-            UNIQUE
-            (
-                SourceTableID,
-                TargetColumnName
-            ),
-
         CONSTRAINT UQ_DataDictionary_Table_Ordinal
             UNIQUE
             (
@@ -455,46 +533,51 @@ BEGIN
                 OrdinalPosition
             ),
 
+
+        /* ====================================================
+           Validation
+           ==================================================== */
+
         CONSTRAINT CK_DataDictionary_Code
             CHECK (Code > 0),
 
         CONSTRAINT CK_DataDictionary_OrdinalPosition
             CHECK (OrdinalPosition > 0),
 
-        CONSTRAINT CK_DataDictionary_DataTypeLength
+        CONSTRAINT CK_DataDictionary_RawDataTypeLength
             CHECK
             (
-                DataTypeLength IS NULL
-                OR DataTypeLength = -1
-                OR DataTypeLength > 0
+                RawDataTypeLength IS NULL
+                OR RawDataTypeLength = -1
+                OR RawDataTypeLength > 0
             ),
 
-        CONSTRAINT CK_DataDictionary_Precision
+        CONSTRAINT CK_DataDictionary_RawPrecision
             CHECK
             (
-                DataTypePrecision IS NULL
-                OR DataTypePrecision BETWEEN 1 AND 38
+                RawDataTypePrecision IS NULL
+                OR RawDataTypePrecision BETWEEN 1 AND 38
             ),
 
-        CONSTRAINT CK_DataDictionary_Scale
+        CONSTRAINT CK_DataDictionary_RawScale
             CHECK
             (
-                DataTypeScale IS NULL
-                OR DataTypeScale BETWEEN 0 AND 38
+                RawDataTypeScale IS NULL
+                OR RawDataTypeScale BETWEEN 0 AND 38
             ),
 
-        CONSTRAINT CK_DataDictionary_ScalePrecision
+        CONSTRAINT CK_DataDictionary_RawScalePrecision
             CHECK
             (
-                DataTypeScale IS NULL
-                OR DataTypePrecision IS NULL
-                OR DataTypeScale <= DataTypePrecision
+                RawDataTypeScale IS NULL
+                OR RawDataTypePrecision IS NULL
+                OR RawDataTypeScale <= RawDataTypePrecision
             ),
 
-        CONSTRAINT CK_DataDictionary_SqlDataType
+        CONSTRAINT CK_DataDictionary_RawSqlDataType
             CHECK
             (
-                SqlDataType IN
+                RawSqlDataType IN
                 (
                     'BIT',
                     'TINYINT',
@@ -517,7 +600,10 @@ BEGIN
                     'DATETIME',
                     'DATETIME2',
 
-                    'UNIQUEIDENTIFIER'
+                    'UNIQUEIDENTIFIER',
+
+                    'BINARY',
+                    'VARBINARY'
                 )
             )
     );
